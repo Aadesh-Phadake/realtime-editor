@@ -1,17 +1,28 @@
 {
+  "type": "module",
   "name": "realtime-editor",
   "private": true,
   "version": "0.0.0",
-  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "server:dev": "nodemon server.js",
+    "server:prod": "node server.js",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
+    "codemirror": "^5.65.19",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "react-hot-toast": "^2.5.2",
+    "react-router": "^7.6.3",
+    "react-router-dom": "^7.6.3",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "uuid": "^11.1.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.1",
