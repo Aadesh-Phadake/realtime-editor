@@ -20,7 +20,6 @@ const Editor = ({socketRef , roomId ,onCodeChange}) => {
      });
      
      editorRef.current.on('change', (instance, changes) => {
-        console.log('Editor content changed:', changes);
         const {origin}= changes;
         const code = instance.getValue();
         onCodeChange(code);

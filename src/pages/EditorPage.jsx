@@ -5,7 +5,6 @@ import {initSocket} from '../socket'
 import ACTIONS from '@shared/Actions.js';
 import { Navigate, useLocation ,useNavigate, useParams } from 'react-router-dom'
 import toast from 'react-hot-toast'
-// Remove Split import
 
 const EditorPage = () => {
   const socketRef = useRef(null);
@@ -15,28 +14,29 @@ const EditorPage = () => {
   const reactNavigator = useNavigate();
   const [clients, setClients] = useState([]);
   const [output, setOutput] = useState('');
-  const [language, setLanguage] = useState('c'); // default language
+  const [language, setLanguage] = useState('c'); 
+  const [code, setCode] = useState(() => localStorage.getItem(`code-${roomId}`) || '');
 
   useEffect(()=> {
     const init = async () => {
-      console.log('Initializing socket...');
       socketRef.current = await initSocket();
       socketRef.current.on('connect', () => {
-        console.log('Socket initialized:', socketRef.current.id);
+        // On connect, if solo, load code from localStorage
+        if (clients.length <= 1) {
+          const localCode = localStorage.getItem(`code-${roomId}`) || '';
+          codeRef.current = localCode;
+          setCode(localCode);
+        }
       });
       socketRef.current.on('connect_error', (err) => {
         console.error(`Connection error: ${err.message}`);
         toast.error('Connection failed, please try again later.');
-        reactNavigator('/'); // Redirect to home or error page
+        reactNavigator('/');
       });
       socketRef.current.on('connect_failed', (err) => {
         console.error(`Connection failed: ${err.message}`);
         toast.error('Connection failed, please try again later.');
-        reactNavigator('/'); // Redirect to home or error page
-      });
-      console.log('Emitting ACTIONS.JOIN with:', {
-        roomId,
-        username: location.state?.username,
+        reactNavigator('/');
       });
       socketRef.current.emit(ACTIONS.JOIN, {
         roomId,
@@ -45,24 +45,27 @@ const EditorPage = () => {
 
       //listen for 'joined' event
       socketRef.current.on(ACTIONS.JOINED, ({ clients, username, socketId }) => {
+        setClients(clients);
+        // If solo, load code from localStorage
+        if (clients.length <= 1) {
+          const localCode = localStorage.getItem(`code-${roomId}`) || '';
+          codeRef.current = localCode;
+          setCode(localCode);
+        }
         if (username !== location.state?.username) {
           toast.success(`${username} has joined the room.`);
-          console.log(`${username} joined`);
         }
-        setClients(clients);
         setTimeout(() => {
           socketRef.current.emit(ACTIONS.SYNC_CODE, {
             code: codeRef.current,
             socketId,
           });
-        }, 100); // 100ms delay
+        }, 100);
       });
       //listen for 'disconnected' event
       socketRef.current.on(ACTIONS.DISCONNECTED, ({ socketId, username }) => {
         toast.success(`${username} has left the room.`);
-        setClients((prev) => {
-          return prev.filter(client => client.socketId !== socketId);
-        });
+        setClients((prev) => prev.filter(client => client.socketId !== socketId));
       });
     };
     init();
@@ -73,7 +76,7 @@ const EditorPage = () => {
         socketRef.current.disconnect();
       }
     };
-  }, []);
+  }, [roomId]);
 
 
   function copyRoomId() {
@@ -167,7 +170,15 @@ const EditorPage = () => {
       </div>
       <div className='editorWrap' style={{position: 'relative', height: '100vh', overflow: 'hidden'}}>
         <div style={{height: editorHeight, width: '100%', overflow: 'auto'}}>
-          <Editor socketRef={socketRef} roomId={roomId} onCodeChange={code => { codeRef.current = code; }} />
+          <Editor
+            socketRef={socketRef}
+            roomId={roomId}
+            onCodeChange={newCode => {
+              codeRef.current = newCode;
+              setCode(newCode);
+              localStorage.setItem(`code-${roomId}`, newCode);
+            }}
+          />
         </div>
         <div
           style={{
