@@ -143,3 +143,76 @@ footer a {
   line-height: 1.6;
   padding-top: 20px;
 }
+
+/* Language selector styling */
+select {
+  margin-top: 16px;
+  margin-right: 10px;
+  padding: 8px 12px;
+  border-radius: 5px;
+  border: 1px solid #4aee88;
+  background: #23243a;
+  color: #4aee88;
+  font-size: 16px;
+  font-weight: bold;
+  outline: none;
+  transition: border 0.2s;
+}
+select:focus {
+  border: 1.5px solid #2b824c;
+}
+
+/* Run button styling */
+.runBtn {
+  background: #4aee88;
+  color: #23243a;
+  border: none;
+  border-radius: 5px;
+  padding: 8px 24px;
+  font-size: 16px;
+  font-weight: bold;
+  margin-left: 8px;
+  margin-top: 16px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.runBtn:hover {
+  background: #2b824c;
+}
+
+/* Output area styling */
+.outputArea {
+  background: #181a27;
+  color: #4aee88;
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 18px;
+  font-size: 18px;
+  min-height: 60px;
+  max-height: 300px;
+  overflow-y: auto;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  white-space: pre-wrap;
+} 
+
+/* Custom vertical splitter gutter styling */
+.editorWrap > div[style*='height: 8px'] {
+  background: #23243a;
+  cursor: row-resize;
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.editorWrap > div[style*='height: 8px'] > div {
+  height: 100%;
+  width: 96%;
+  border-radius: 4px;
+  background: #4aee88;
+  opacity: 0.3;
+  transition: opacity 0.2s;
+}
+.editorWrap > div[style*='height: 8px']:hover > div {
+  opacity: 0.6;
+}

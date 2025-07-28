@@ -5,6 +5,7 @@ import {initSocket} from '../socket'
 import ACTIONS from '@shared/Actions.js';
 import { Navigate, useLocation ,useNavigate, useParams } from 'react-router-dom'
 import toast from 'react-hot-toast'
+// Remove Split import
 
 const EditorPage = () => {
   const socketRef = useRef(null);
@@ -13,6 +14,8 @@ const EditorPage = () => {
   const { roomId } = useParams();
   const reactNavigator = useNavigate();
   const [clients, setClients] = useState([]);
+  const [output, setOutput] = useState('');
+  const [language, setLanguage] = useState('c'); // default language
 
   useEffect(()=> {
     const init = async () => {
@@ -88,7 +91,63 @@ const EditorPage = () => {
   if(!location.state) {
     return <Navigate to='/'/>
   }
+    async function runCode() {
+    setOutput('Running...');
+    // Judge0 language IDs: C=50, C++=54, Java=62, C#=51, JavaScript=63, Python=71
+    const languageIds = { c: 50, cpp: 54, java: 62, csharp: 51, javascript: 63, python: 71 };
+    const code = codeRef.current || '';
+    const payload = {
+      source_code: code,
+      language_id: languageIds[language],
+      stdin: '', // You can add input support if needed
+    };
   
+    try {
+      // Submit code for execution
+      const res = await fetch('https://judge0-ce.p.rapidapi.com/submissions?base64_encoded=false&wait=true', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-RapidAPI-Key': import.meta.env.VITE_JUDGE0_API_KEY, // <-- Replace with your RapidAPI key
+          'X-RapidAPI-Host': 'judge0-ce.p.rapidapi.com'
+        },
+        body: JSON.stringify(payload)
+      });
+      const result = await res.json();
+      setOutput(result.stdout || result.stderr || result.compile_output || 'No output');
+    } catch (err) {
+      setOutput('Error running code');
+      console.error(err);
+    }
+  }
+  // Custom vertical splitter logic
+  const [editorHeight, setEditorHeight] = React.useState(window.innerHeight * 0.7);
+  const dragging = React.useRef(false);
+
+  const onMouseDown = () => {
+    dragging.current = true;
+    document.body.style.cursor = 'row-resize';
+  };
+  const onMouseUp = () => {
+    dragging.current = false;
+    document.body.style.cursor = '';
+  };
+  const onMouseMove = (e) => {
+    if (!dragging.current) return;
+    const wrapRect = document.querySelector('.editorWrap').getBoundingClientRect();
+    let newHeight = e.clientY - wrapRect.top;
+    newHeight = Math.max(100, Math.min(newHeight, window.innerHeight - 100));
+    setEditorHeight(newHeight);
+  };
+  React.useEffect(() => {
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  });
+
   return (
     <div className='mainWrap'>
       <div className='aside'>
@@ -106,11 +165,40 @@ const EditorPage = () => {
         <button className='btn copyBtn' onClick={copyRoomId}>Copy Room ID</button>
         <button className='btn leaveBtn' onClick={leaveRoom}>Leave</button>
       </div>
-      <div className='editorWrap'>
-        <Editor  socketRef={socketRef} roomId={roomId} onCodeChange={(code) => {codeRef.current = code;}} />
+      <div className='editorWrap' style={{position: 'relative', height: '100vh', overflow: 'hidden'}}>
+        <div style={{height: editorHeight, width: '100%', overflow: 'auto'}}>
+          <Editor socketRef={socketRef} roomId={roomId} onCodeChange={code => { codeRef.current = code; }} />
+        </div>
+        <div
+          style={{
+            height: '8px',
+            width: '100%',
+            background: '#23243a',
+            cursor: 'row-resize',
+            position: 'relative',
+            zIndex: 2,
+          }}
+          onMouseDown={onMouseDown}
+        >
+          <div style={{height: '100%', width: '100%', borderRadius: '4px', background: '#4aee88', opacity: 0.3}}></div>
+        </div>
+        <div style={{height: `calc(100% - ${editorHeight}px - 8px)`, width: '100%', overflow: 'auto'}}>
+          <div className="compilerWrap">
+            <select value={language} onChange={e => setLanguage(e.target.value)}>
+              <option value="c">C</option>
+              <option value="cpp">C++</option>
+              <option value="java">Java</option>
+              <option value="csharp">C#</option>
+              <option value="javascript">JavaScript</option>
+              <option value="python">Python</option>
+            </select>
+            <button className="btn runBtn" onClick={runCode}>Run</button>
+            <pre className="outputArea">{output}</pre>
+          </div>
+        </div>
       </div>
     </div>
-  )
+  );
 }
 
 export default EditorPage
