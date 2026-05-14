@@ -13,19 +13,45 @@ const io = new Server(server);
 
 // ── Persistent browser instance for scraping (reuse for performance) ──
 let browserInstance = null;
+let puppeteerAvailable = true; // flag to avoid retrying if Chrome is missing
+
 async function getBrowser() {
-  if (!browserInstance || !browserInstance.connected) {
-    browserInstance = await puppeteer.launch({
+  if (!puppeteerAvailable) return null;
+  if (browserInstance && browserInstance.connected) return browserInstance;
+
+  try {
+    const launchOptions = {
       headless: 'new',
-      args: ['--no-sandbox', '--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage'],
-    });
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process',
+      ],
+    };
+
+    // On Render/Linux, Chromium may be installed via buildpack at a custom path
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+      launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    }
+
+    browserInstance = await puppeteer.launch(launchOptions);
+    console.log('✅ Puppeteer browser launched');
+    return browserInstance;
+  } catch (err) {
+    console.warn('⚠️ Puppeteer unavailable (Chrome not found). Sample scraping disabled.');
+    console.warn('   To fix on Render: add https://github.com/nicholasgasior/render-puppeteer-buildpack');
+    puppeteerAvailable = false;
+    return null;
   }
-  return browserInstance;
 }
 
 // Scrape sample test cases from a Codeforces problem page using Puppeteer
 async function scrapeCfSamples(cfUrl) {
   const browser = await getBrowser();
+  if (!browser) return []; // Chrome not available, skip scraping
   const page = await browser.newPage();
   try {
     await page.setUserAgent(
