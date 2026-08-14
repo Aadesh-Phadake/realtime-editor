@@ -6,68 +6,137 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { Server } from 'socket.io';
 import ACTIONS from './shared/Actions.js';
 import * as cheerio from 'cheerio';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+
+puppeteer.use(StealthPlugin());
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// ── Common headers to mimic a real browser (avoids Cloudflare blocking) ──
+// ── Common headers to mimic a real browser ──
 const BROWSER_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.9',
 };
 
-// ── Scrape sample test cases using fetch + cheerio (lightweight, no browser needed) ──
+// ── Persistent stealth browser instance ──
+let browserInstance = null;
+
+async function getStealthBrowser() {
+  if (browserInstance && browserInstance.connected) return browserInstance;
+  try {
+    const launchOptions = {
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+      ],
+    };
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+      launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    }
+    browserInstance = await puppeteer.launch(launchOptions);
+    console.log('✅ Stealth browser launched');
+    return browserInstance;
+  } catch (err) {
+    console.warn('⚠️ Stealth browser unavailable:', err.message);
+    return null;
+  }
+}
+
+// ── Parse sample test cases from HTML (shared by both cheerio and Puppeteer) ──
+function parseSamplesFromHtml(html) {
+  const $ = cheerio.load(html);
+  const sampleTest = $('.sample-test');
+  if (sampleTest.length === 0) return [];
+
+  const inputs = sampleTest.find('.input pre');
+  const outputs = sampleTest.find('.output pre');
+  const samples = [];
+
+  inputs.each((i, el) => {
+    const $pre = $(el);
+    const divs = $pre.find('div');
+    let inputText;
+    if (divs.length > 0) {
+      inputText = divs.map((_, d) => $(d).text()).get().join('\n').trim();
+    } else {
+      inputText = $pre.text().trim();
+    }
+
+    let outputText = '';
+    const $outPre = $(outputs[i]);
+    if ($outPre.length) {
+      const outDivs = $outPre.find('div');
+      if (outDivs.length > 0) {
+        outputText = outDivs.map((_, d) => $(d).text()).get().join('\n').trim();
+      } else {
+        outputText = $outPre.text().trim();
+      }
+    }
+
+    samples.push({ input: inputText, output: outputText });
+  });
+
+  return samples;
+}
+
+// ── Tier 1: Try lightweight fetch + cheerio ──
+async function scrapeCfCheerio(cfUrl) {
+  const res = await fetch(cfUrl, { headers: BROWSER_HEADERS, redirect: 'follow' });
+  if (!res.ok) return null; // signal to try Puppeteer
+  const html = await res.text();
+  const samples = parseSamplesFromHtml(html);
+  return samples.length > 0 ? samples : null;
+}
+
+// ── Tier 2: Stealth Puppeteer (bypasses Cloudflare) ──
+async function scrapeCfPuppeteer(cfUrl) {
+  const browser = await getStealthBrowser();
+  if (!browser) return [];
+
+  const page = await browser.newPage();
+  try {
+    await page.goto(cfUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // Wait for Cloudflare challenge to resolve + page to render
+    await page.waitForSelector('.sample-test', { timeout: 15000 }).catch(() => null);
+
+    const html = await page.content();
+    return parseSamplesFromHtml(html);
+  } catch (err) {
+    console.warn('⚠️ Stealth scrape error:', err.message);
+    return [];
+  } finally {
+    await page.close();
+  }
+}
+
+// ── Combined scraper: cheerio fast-path → Puppeteer fallback ──
 async function scrapeCfSamples(cfUrl) {
   try {
-    const res = await fetch(cfUrl, { headers: BROWSER_HEADERS, redirect: 'follow' });
-    if (!res.ok) {
-      console.warn(`⚠️ CF scrape: HTTP ${res.status} for ${cfUrl}`);
-      return [];
-    }
-    const html = await res.text();
-    const $ = cheerio.load(html);
-
-    const sampleTest = $('.sample-test');
-    if (sampleTest.length === 0) {
-      console.warn('⚠️ CF scrape: no .sample-test found (Cloudflare may have blocked the page)');
-      return [];
+    // Try lightweight cheerio first
+    const cheerioResult = await scrapeCfCheerio(cfUrl);
+    if (cheerioResult) {
+      console.log('  ✅ Samples scraped via cheerio (fast path)');
+      return cheerioResult;
     }
 
-    // Extract input/output pairs
-    const inputs = sampleTest.find('.input pre');
-    const outputs = sampleTest.find('.output pre');
-    const samples = [];
-
-    inputs.each((i, el) => {
-      // Codeforces wraps each line in a <div> inside <pre>
-      const $pre = $(el);
-      const divs = $pre.find('div');
-      let inputText;
-      if (divs.length > 0) {
-        inputText = divs.map((_, d) => $(d).text()).get().join('\n').trim();
-      } else {
-        inputText = $pre.text().trim();
-      }
-
-      let outputText = '';
-      const $outPre = $(outputs[i]);
-      if ($outPre.length) {
-        const outDivs = $outPre.find('div');
-        if (outDivs.length > 0) {
-          outputText = outDivs.map((_, d) => $(d).text()).get().join('\n').trim();
-        } else {
-          outputText = $outPre.text().trim();
-        }
-      }
-
-      samples.push({ input: inputText, output: outputText });
-    });
-
-    return samples;
+    // Cloudflare blocked us — fall back to stealth Puppeteer
+    console.log('  ⏳ Cheerio blocked, trying stealth Puppeteer...');
+    const puppeteerResult = await scrapeCfPuppeteer(cfUrl);
+    if (puppeteerResult.length > 0) {
+      console.log('  ✅ Samples scraped via stealth Puppeteer');
+    } else {
+      console.warn('  ⚠️ Could not scrape samples (Cloudflare may be blocking both methods)');
+    }
+    return puppeteerResult;
   } catch (err) {
-    console.warn('⚠️ CF scrape failed (non-critical):', err.message);
+    console.warn('⚠️ CF scrape failed:', err.message);
     return [];
   }
 }
@@ -91,7 +160,7 @@ async function fetchCfApi() {
   }
 }
 
-// ── Codeforces Problem Endpoint (API metadata + cheerio sample scraping) ──
+// ── Codeforces Problem Endpoint ──
 app.get('/api/codeforces', async (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).json({ error: 'Missing "url" query parameter' });
@@ -111,8 +180,9 @@ app.get('/api/codeforces', async (req, res) => {
   }
 
   try {
-    // Fetch metadata from official CF API + scrape samples with cheerio in parallel
     const cfPageUrl = `https://codeforces.com/problemset/problem/${contestId}/${index}`;
+    console.log(`🔍 Fetching CF problem: ${contestId}/${index}`);
+
     const [apiRes, samples] = await Promise.all([
       fetchCfApi(),
       scrapeCfSamples(cfPageUrl),
@@ -134,7 +204,7 @@ app.get('/api/codeforces', async (req, res) => {
       return res.status(404).json({ error: `Problem ${contestId}/${index} not found` });
     }
 
-    console.log(`✅ CF: ${problem.index}. ${problem.name} | ${samples.length} sample(s) scraped`);
+    console.log(`✅ CF: ${problem.index}. ${problem.name} | ${samples.length} sample(s)`);
     res.json({
       contestId: problem.contestId,
       index: problem.index,
