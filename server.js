@@ -35,16 +35,21 @@ async function getStealthBrowser() {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
+        '--single-process',
       ],
     };
+
+    // Use explicit Chrome path if set (Render buildpack, Docker, etc.)
     if (process.env.PUPPETEER_EXECUTABLE_PATH) {
       launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
     }
+
     browserInstance = await puppeteer.launch(launchOptions);
     console.log('✅ Stealth browser launched');
     return browserInstance;
   } catch (err) {
     console.warn('⚠️ Stealth browser unavailable:', err.message);
+    console.warn('   Ensure Chrome is installed: npx puppeteer browsers install chrome');
     return null;
   }
 }

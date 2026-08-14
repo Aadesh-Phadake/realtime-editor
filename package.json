@@ -7,6 +7,7 @@
     "dev:front": "vite",
     "dev": "npm run build && npm run server:prod",
     "build": "vite build",
+    "postinstall": "npx puppeteer browsers install chrome",
     "server:dev": "nodemon server.js",
     "server:prod": "node server.js",
     "lint": "eslint .",
