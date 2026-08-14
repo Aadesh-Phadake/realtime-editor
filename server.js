@@ -5,100 +5,93 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { Server } from 'socket.io';
 import ACTIONS from './shared/Actions.js';
-import puppeteer from 'puppeteer';
+import * as cheerio from 'cheerio';
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// ── Persistent browser instance for scraping (reuse for performance) ──
-let browserInstance = null;
-let puppeteerAvailable = true; // flag to avoid retrying if Chrome is missing
+// ── Common headers to mimic a real browser (avoids Cloudflare blocking) ──
+const BROWSER_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+};
 
-async function getBrowser() {
-  if (!puppeteerAvailable) return null;
-  if (browserInstance && browserInstance.connected) return browserInstance;
-
-  try {
-    const launchOptions = {
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--single-process',
-      ],
-    };
-
-    // On Render/Linux, Chromium may be installed via buildpack at a custom path
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-      launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-    }
-
-    browserInstance = await puppeteer.launch(launchOptions);
-    console.log('✅ Puppeteer browser launched');
-    return browserInstance;
-  } catch (err) {
-    console.warn('⚠️ Puppeteer unavailable (Chrome not found). Sample scraping disabled.');
-    console.warn('   To fix on Render: add https://github.com/nicholasgasior/render-puppeteer-buildpack');
-    puppeteerAvailable = false;
-    return null;
-  }
-}
-
-// Scrape sample test cases from a Codeforces problem page using Puppeteer
+// ── Scrape sample test cases using fetch + cheerio (lightweight, no browser needed) ──
 async function scrapeCfSamples(cfUrl) {
-  const browser = await getBrowser();
-  if (!browser) return []; // Chrome not available, skip scraping
-  const page = await browser.newPage();
   try {
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
-    );
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => false });
-    });
-    await page.goto(cfUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-    // Wait a bit for Cloudflare challenge to resolve
-    await new Promise(r => setTimeout(r, 3000));
+    const res = await fetch(cfUrl, { headers: BROWSER_HEADERS, redirect: 'follow' });
+    if (!res.ok) {
+      console.warn(`⚠️ CF scrape: HTTP ${res.status} for ${cfUrl}`);
+      return [];
+    }
+    const html = await res.text();
+    const $ = cheerio.load(html);
 
-    // Check if the page loaded properly
-    const hasSamples = await page.evaluate(() => !!document.querySelector('.sample-test'));
-    if (!hasSamples) {
+    const sampleTest = $('.sample-test');
+    if (sampleTest.length === 0) {
+      console.warn('⚠️ CF scrape: no .sample-test found (Cloudflare may have blocked the page)');
       return [];
     }
 
-    const samples = await page.evaluate(() => {
-      // Codeforces wraps each line in a <div> inside <pre>. We need to
-      // extract text from each child div separately and join with newlines.
-      function extractPreText(preEl) {
-        const divs = preEl.querySelectorAll('div');
-        if (divs.length > 0) {
-          // Each <div> = one line
-          return [...divs].map(d => d.textContent).join('\n').trim();
-        }
-        // Fallback: no divs, use innerText which preserves <br> as newlines
-        return preEl.innerText.trim();
+    // Extract input/output pairs
+    const inputs = sampleTest.find('.input pre');
+    const outputs = sampleTest.find('.output pre');
+    const samples = [];
+
+    inputs.each((i, el) => {
+      // Codeforces wraps each line in a <div> inside <pre>
+      const $pre = $(el);
+      const divs = $pre.find('div');
+      let inputText;
+      if (divs.length > 0) {
+        inputText = divs.map((_, d) => $(d).text()).get().join('\n').trim();
+      } else {
+        inputText = $pre.text().trim();
       }
-      const inputs = [...document.querySelectorAll('.sample-test .input pre')];
-      const outputs = [...document.querySelectorAll('.sample-test .output pre')];
-      return inputs.map((el, i) => ({
-        input: extractPreText(el),
-        output: outputs[i] ? extractPreText(outputs[i]) : '',
-      }));
+
+      let outputText = '';
+      const $outPre = $(outputs[i]);
+      if ($outPre.length) {
+        const outDivs = $outPre.find('div');
+        if (outDivs.length > 0) {
+          outputText = outDivs.map((_, d) => $(d).text()).get().join('\n').trim();
+        } else {
+          outputText = $outPre.text().trim();
+        }
+      }
+
+      samples.push({ input: inputText, output: outputText });
     });
+
     return samples;
   } catch (err) {
-    console.error('Puppeteer scrape error:', err.message);
+    console.warn('⚠️ CF scrape failed (non-critical):', err.message);
     return [];
-  } finally {
-    await page.close();
   }
 }
 
-// ── Codeforces Problem Endpoint (API metadata + Puppeteer sample scraping) ──
+// ── Fetch from Codeforces API with proper headers and retry ──
+async function fetchCfApi() {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch('https://codeforces.com/api/problemset.problems', {
+        headers: BROWSER_HEADERS,
+      });
+      return res;
+    } catch (err) {
+      if (attempt < 3) {
+        console.warn(`⚠️ CF API attempt ${attempt} failed: ${err.message}, retrying...`);
+        await new Promise(r => setTimeout(r, 1000 * attempt));
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
+// ── Codeforces Problem Endpoint (API metadata + cheerio sample scraping) ──
 app.get('/api/codeforces', async (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).json({ error: 'Missing "url" query parameter' });
@@ -118,10 +111,10 @@ app.get('/api/codeforces', async (req, res) => {
   }
 
   try {
-    // Fetch metadata from official CF API + scrape samples with Puppeteer in parallel
+    // Fetch metadata from official CF API + scrape samples with cheerio in parallel
     const cfPageUrl = `https://codeforces.com/problemset/problem/${contestId}/${index}`;
     const [apiRes, samples] = await Promise.all([
-      fetch('https://codeforces.com/api/problemset.problems'),
+      fetchCfApi(),
       scrapeCfSamples(cfPageUrl),
     ]);
 
@@ -153,8 +146,8 @@ app.get('/api/codeforces', async (req, res) => {
       samples,
     });
   } catch (err) {
-    console.error('CF error:', err.message);
-    res.status(500).json({ error: 'Failed to fetch problem' });
+    console.warn('⚠️ CF fetch error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch problem — Codeforces may be temporarily unavailable. Try again or add test cases manually.' });
   }
 });
 
