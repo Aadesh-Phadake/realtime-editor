@@ -39,17 +39,24 @@ async function getStealthBrowser() {
       ],
     };
 
-    // Use explicit Chrome path if set (Render buildpack, Docker, etc.)
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    // Production (Render): use @sparticuz/chromium which bundles its own Chromium
+    if (process.env.RENDER) {
+      const chromium = (await import('@sparticuz/chromium')).default;
+      launchOptions.executablePath = await chromium.executablePath();
+      launchOptions.args = [...chromium.args, '--single-process'];
+      launchOptions.headless = chromium.headless;
+      console.log('  Using @sparticuz/chromium for Render');
+    } else if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+      // Custom Chrome path (Docker, buildpack, etc.)
       launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
     }
+    // else: local dev — puppeteer auto-detects its bundled Chrome
 
     browserInstance = await puppeteer.launch(launchOptions);
     console.log('✅ Stealth browser launched');
     return browserInstance;
   } catch (err) {
     console.warn('⚠️ Stealth browser unavailable:', err.message);
-    console.warn('   Ensure Chrome is installed: npx puppeteer browsers install chrome');
     return null;
   }
 }
@@ -107,7 +114,7 @@ async function scrapeCfPuppeteer(cfUrl) {
 
   const page = await browser.newPage();
 
-  // Capture HTML from network responses — works even if frame detaches
+  // Capture HTML from network responses — works even if frame detaches or nav times out
   let capturedHtml = '';
   page.on('response', async (response) => {
     try {
@@ -126,29 +133,23 @@ async function scrapeCfPuppeteer(cfUrl) {
   });
 
   try {
-    // Navigate — Cloudflare challenge may cause frame detachment
-    let navOk = false;
+    // Navigate — catch ALL errors (timeout, detached frame, etc.)
+    // The response listener captures HTML independently of navigation state
     try {
-      await page.goto(cfUrl, { waitUntil: 'networkidle2', timeout: 45000 });
-      navOk = true;
+      await page.goto(cfUrl, { waitUntil: 'networkidle2', timeout: 30000 });
     } catch (navErr) {
-      if (!navErr.message.includes('detached') && !navErr.message.includes('Detached')) {
-        throw navErr;
-      }
-      // Frame detached = CF challenge redirect — wait for it to resolve
-      console.log('  ⏳ CF challenge detected, waiting for resolution...');
-      await new Promise(r => setTimeout(r, 10000));
+      console.log(`  ⏳ Navigation issue: ${navErr.message.split('\n')[0]}, checking captured data...`);
+      // Give response listener extra time to capture HTML
+      await new Promise(r => setTimeout(r, 3000));
     }
 
     // Try getting content directly from page
-    if (navOk) {
-      try {
-        await page.waitForSelector('.sample-test', { timeout: 10000 }).catch(() => {});
-        const html = await page.content();
-        const samples = parseSamplesFromHtml(html);
-        if (samples.length > 0) return samples;
-      } catch (_) {}
-    }
+    try {
+      await page.waitForSelector('.sample-test', { timeout: 5000 }).catch(() => {});
+      const html = await page.content();
+      const samples = parseSamplesFromHtml(html);
+      if (samples.length > 0) return samples;
+    } catch (_) {}
 
     // Fallback: use the HTML captured from network response
     if (capturedHtml) {

@@ -7,13 +7,13 @@
     "dev:front": "vite",
     "dev": "npm run build && npm run server:prod",
     "build": "vite build",
-    "postinstall": "npx puppeteer browsers install chrome",
     "server:dev": "nodemon server.js",
     "server:prod": "node server.js",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@sparticuz/chromium": "^149.0.0",
     "cheerio": "^1.2.0",
     "codemirror": "^5.65.19",
     "cors": "^2.8.5",
