@@ -106,18 +106,62 @@ async function scrapeCfPuppeteer(cfUrl) {
   if (!browser) return [];
 
   const page = await browser.newPage();
-  try {
-    await page.goto(cfUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    // Wait for Cloudflare challenge to resolve + page to render
-    await page.waitForSelector('.sample-test', { timeout: 15000 }).catch(() => null);
 
-    const html = await page.content();
-    return parseSamplesFromHtml(html);
+  // Capture HTML from network responses — works even if frame detaches
+  let capturedHtml = '';
+  page.on('response', async (response) => {
+    try {
+      const ct = response.headers()['content-type'] || '';
+      if (
+        response.url().includes('codeforces.com') &&
+        ct.includes('text/html') &&
+        response.status() === 200
+      ) {
+        const text = await response.text();
+        if (text.includes('sample-test')) {
+          capturedHtml = text;
+        }
+      }
+    } catch (_) {}
+  });
+
+  try {
+    // Navigate — Cloudflare challenge may cause frame detachment
+    let navOk = false;
+    try {
+      await page.goto(cfUrl, { waitUntil: 'networkidle2', timeout: 45000 });
+      navOk = true;
+    } catch (navErr) {
+      if (!navErr.message.includes('detached') && !navErr.message.includes('Detached')) {
+        throw navErr;
+      }
+      // Frame detached = CF challenge redirect — wait for it to resolve
+      console.log('  ⏳ CF challenge detected, waiting for resolution...');
+      await new Promise(r => setTimeout(r, 10000));
+    }
+
+    // Try getting content directly from page
+    if (navOk) {
+      try {
+        await page.waitForSelector('.sample-test', { timeout: 10000 }).catch(() => {});
+        const html = await page.content();
+        const samples = parseSamplesFromHtml(html);
+        if (samples.length > 0) return samples;
+      } catch (_) {}
+    }
+
+    // Fallback: use the HTML captured from network response
+    if (capturedHtml) {
+      console.log('  ✅ Using network-captured HTML');
+      return parseSamplesFromHtml(capturedHtml);
+    }
+
+    return [];
   } catch (err) {
     console.warn('⚠️ Stealth scrape error:', err.message);
     return [];
   } finally {
-    await page.close();
+    try { await page.close(); } catch (_) {}
   }
 }
 
