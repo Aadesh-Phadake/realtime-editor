@@ -33,12 +33,25 @@ const EditorPage = () => {
 
   useEffect(()=> {
     const init = async () => {
+      // ── Fetch saved code from MongoDB (if room exists) ──
+      let savedCode = '';
+      try {
+        const dbRes = await fetch(`/api/rooms/${roomId}`);
+        if (dbRes.ok) {
+          const dbData = await dbRes.json();
+          savedCode = dbData.lastCode || '';
+        }
+      } catch (err) {
+        console.log('No saved room data in DB');
+      }
+
       socketRef.current = await initSocket();
       socketRef.current.on('connect', () => {
         if (clients.length <= 1) {
-          const localCode = localStorage.getItem(`code-${roomId}`) || '';
-          codeRef.current = localCode;
-          setCode(localCode);
+          // Prefer DB-saved code, then localStorage, then empty
+          const initialCode = savedCode || localStorage.getItem(`code-${roomId}`) || '';
+          codeRef.current = initialCode;
+          setCode(initialCode);
         }
       });
       socketRef.current.on('connect_error', (err) => {
@@ -59,9 +72,9 @@ const EditorPage = () => {
       socketRef.current.on(ACTIONS.JOINED, ({ clients, username, socketId }) => {
         setClients(clients);
         if (clients.length <= 1) {
-          const localCode = localStorage.getItem(`code-${roomId}`) || '';
-          codeRef.current = localCode;
-          setCode(localCode);
+          const initialCode = savedCode || localStorage.getItem(`code-${roomId}`) || '';
+          codeRef.current = initialCode;
+          setCode(initialCode);
         }
         if (username !== location.state?.username) {
           toast.success(`${username} has joined the room.`);

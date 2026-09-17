@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import path from 'path';
@@ -8,8 +9,13 @@ import ACTIONS from './shared/Actions.js';
 import * as cheerio from 'cheerio';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import connectDB from './db.js';
+import Room from './models/Room.js';
 
 puppeteer.use(StealthPlugin());
+
+// ── Connect to MongoDB ──
+connectDB();
 
 const app = express();
 const server = http.createServer(app);
@@ -271,6 +277,58 @@ app.get('/api/codeforces', async (req, res) => {
   }
 });
 
+// ── Room REST Endpoints ──
+
+// GET /api/rooms/:roomId — fetch saved room data (code, language, history)
+app.get('/api/rooms/:roomId', async (req, res) => {
+  try {
+    const room = await Room.findOne({ roomId: req.params.roomId });
+    if (!room) return res.status(404).json({ error: 'Room not found' });
+    res.json({
+      roomId: room.roomId,
+      lastCode: room.lastCode,
+      language: room.language,
+      createdAt: room.createdAt,
+      lastActive: room.lastActive,
+      joinHistory: room.joinHistory.slice(-20), // last 20 joins
+    });
+  } catch (err) {
+    console.error('❌ Room fetch error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/rooms — list recent active rooms (for dashboard / interview demo)
+app.get('/api/rooms', async (req, res) => {
+  try {
+    const rooms = await Room.find()
+      .sort({ lastActive: -1 })
+      .limit(20)
+      .select('roomId language createdAt lastActive joinHistory');
+    res.json(rooms);
+  } catch (err) {
+    console.error('❌ Rooms list error:', err.message);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ── Debounced code save to MongoDB ──
+const saveTimers = {};
+function debouncedSaveCode(roomId, code) {
+  if (saveTimers[roomId]) clearTimeout(saveTimers[roomId]);
+  saveTimers[roomId] = setTimeout(async () => {
+    try {
+      await Room.findOneAndUpdate(
+        { roomId },
+        { lastCode: code, lastActive: new Date() },
+        { upsert: true }
+      );
+    } catch (err) {
+      console.error('❌ Code save error:', err.message);
+    }
+  }, 2000); // save 2s after last keystroke
+}
+
 app.use(express.static('dist'));
 app.use((req, res, next) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
@@ -290,7 +348,7 @@ function getAllConnectedClients(roomId) {
 io.on('connection', (socket) => {
   console.log('✅ Socket connected:', socket.id);
 
-  socket.on(ACTIONS.JOIN, ({roomId , username}) => {
+  socket.on(ACTIONS.JOIN, async ({roomId , username}) => {
     userSocketMap[socket.id] = username;
     socket.join(roomId);
     const clients = getAllConnectedClients(roomId);
@@ -301,10 +359,27 @@ io.on('connection', (socket) => {
         socketId: socket.id,
       });
     });
+
+    // ── Persist room + log join to MongoDB ──
+    try {
+      await Room.findOneAndUpdate(
+        { roomId },
+        {
+          $setOnInsert: { createdAt: new Date() },
+          $set: { lastActive: new Date() },
+          $push: { joinHistory: { username, joinedAt: new Date() } },
+        },
+        { upsert: true, new: true }
+      );
+    } catch (err) {
+      console.error('❌ Room upsert error:', err.message);
+    }
   });
 
   socket.on(ACTIONS.CODE_CHANGE, ({roomId, code}) => {
     socket.in(roomId).emit(ACTIONS.CODE_CHANGE, {code});
+    // ── Debounced save to MongoDB ──
+    debouncedSaveCode(roomId, code);
   });
 
   socket.on(ACTIONS.SYNC_CODE, ({socketId, code}) => {
@@ -319,6 +394,12 @@ io.on('connection', (socket) => {
         socketId: socket.id,
         username: userSocketMap[socket.id],
       });
+
+      // ── Update lastActive on disconnect ──
+      Room.findOneAndUpdate(
+        { roomId },
+        { lastActive: new Date() }
+      ).catch(err => console.error('❌ Disconnect update error:', err.message));
     });
     delete userSocketMap[socket.id];
     socket.leave();
